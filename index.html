@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Visual Radiance</title>
+  <meta name="description" content="Visual Radiance: a Grasshopper-style node editor that writes Radiance simulation batch files.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1'%3E%3Cstop offset='0' stop-color='%23262a86'/%3E%3Cstop offset='.35' stop-color='%2317aac4'/%3E%3Cstop offset='.6' stop-color='%23d9cf35'/%3E%3Cstop offset='1' stop-color='%23d3322b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='6' fill='%23232427'/%3E%3Cpath d='M5 23a11 11 0 0 1 22 0' fill='none' stroke='url(%23g)' stroke-width='3.5' stroke-linecap='round'/%3E%3Cpath d='M4 26h24' stroke='%23ecebe6' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true">
+        <defs>
+          <linearGradient id="vr-arc" x1="0" x2="1">
+            <stop offset="0" stop-color="#262a86"/><stop offset=".32" stop-color="#17aac4"/>
+            <stop offset=".6" stop-color="#d9cf35"/><stop offset="1" stop-color="#d3322b"/>
+          </linearGradient>
+        </defs>
+        <path d="M3 16a10 10 0 0 1 20 0" fill="none" stroke="url(#vr-arc)" stroke-width="3.2" stroke-linecap="round"/>
+        <path d="M1.5 18.5h23" stroke="#ecebe6" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span>Visual Radiance</span>
+    </div>
+    <nav id="menubar" class="menubar" aria-label="Menu"></nav>
+    <button id="doc-name" class="doc-name" type="button" title="Rename this definition">Untitled</button>
+    <div class="top-actions">
+      <button id="btn-examples" class="btn ghost" type="button" aria-haspopup="menu">Examples</button>
+      <button id="btn-export" class="btn primary" type="button" title="Save the .bat file of every Batch Writer (Ctrl+Shift+E)">Export .bat</button>
+    </div>
+  </header>
+  <div class="spectrum" aria-hidden="true"></div>
+  <div id="tabs" class="tabs" role="tablist" aria-label="Component tabs"></div>
+  <div id="palette" class="palette" aria-label="Components"></div>
+  <main id="stage" class="stage" aria-label="Canvas"></main>
+  <footer id="status" class="status" role="status" aria-live="polite"></footer>
+  <noscript>Visual Radiance needs JavaScript to run.</noscript>
+
+  <script src="js/core/util.js"></script>
+  <script src="js/core/types.js"></script>
+  <script src="js/radiance/options.js"></script>
+  <script src="js/radiance/builders.js"></script>
+  <script src="js/core/graph.js"></script>
+  <script src="js/components/params.js"></script>
+  <script src="js/components/radiance.js"></script>
+  <script src="js/components/workflows.js"></script>
+  <script src="js/components/output.js"></script>
+  <script src="js/examples.js"></script>
+  <script src="js/ui/icons.js"></script>
+  <script src="js/ui/menus.js"></script>
+  <script src="js/ui/widgets.js"></script>
+  <script src="js/ui/canvas.js"></script>
+  <script src="js/ui/ribbon.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
