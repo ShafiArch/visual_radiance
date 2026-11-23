@@ -54,7 +54,7 @@
       const rows = String(text).split('\n');
       const hh = h || Math.max(44, 30 + rows.length * 17);
       const need = Math.round(Math.max.apply(null, rows.map((r) => r.length)) * 7.3 + 22);
-      const ww = Math.max(w || 0, Math.min(need, 560));
+      const ww = Math.max(w || 0, Math.min(need, 560), Math.round(String(nick || '').length * 6.4 + 26));
       return { type: 'Panel', nick: nick || 'Panel', w: ww, h: hh, state: { text, w: ww, h: hh, multiline: true } };
     }
     toggle(nick, value) { return { type: 'Toggle', nick, w: Math.round(nick.length * 7 + 80), h: 24, state: { value: !!value } }; }
@@ -114,14 +114,15 @@
       b.feed(grid, [['Pts', b.panel('0.pts', 120, 44)]], 40);
       const par = b.node('Rad.Params', 720, 480);
       b.feed(par, [['Preset', b.list('Preset', presets(), 2, 150)], ['ab', b.slider('ab', 4, 0, 12, 0, 190)]], 40);
-      const pit = b.node('Rad.PIT', 1060, 300);
+      const pit = b.node('Rad.PIT', 1120, 300);
       b.wire(scene, 0, pit, 'Scene').wire(sky, 0, pit, 'Sky').wire(grid, 0, pit, 'Grid').wire(par, 0, pit, 'Par');
-      b.feed(pit, [['Out', b.panel('illuminance.txt', 150, 44)], ['Lux', b.toggle('Lux', true)]], 40);
-      const bat = b.node('Bat.Writer', 1440, 300);
+      b.feed(pit, [['Out', b.panel('illuminance.txt', 150, 44)],
+        ['Qty', b.list('Quantity', VR.build.qtyItems(['rgb', 'illuminance', 'irradiance', 'df', 'skyview']), 1, 190)]], 40);
+      const bat = b.node('Bat.Writer', 1500, 300);
       b.wire(pit, 0, bat, 'Scr');
       b.feed(bat, [['Name', b.panel('pit_illuminance.bat', 170, 44)]], 40);
       b.feed(bat, [['Pause', b.toggle('Pause', true)]], 40);
-      const view = b.node('Panel', 1680, 230, { text: '', w: 620, h: 380 }, 'Batch file');
+      const view = b.node('Panel', 1740, 230, { text: '', w: 620, h: 380 }, 'Batch file');
       b.wire(bat, 0, view, 0);
       return b.doc;
     }
@@ -258,12 +259,12 @@
       b.wire(scene, 0, ren, 'Scene').wire(view, 0, ren, 'View').wire(img, 0, ren, 'Img').wire(par, 0, ren, 'Par').wire(warm, 0, ren, 'WarmPar');
       b.feed(ren, [['Sky', b.panel('sky_4118.rad', 130, 44, 'Sky file')], ['Lum', b.panel('luminaries.rad', 130, 44, 'Luminaires')]], 46);
       b.feed(ren, [['Tag', b.panel('4118', 80, 44, 'Hour')], ['Amb', b.panel('IMG.amb', 100, 44, 'Ambient file')]], 46);
-      const bat = b.node('Bat.Writer', 1760, 420);
+      const bat = b.node('Bat.Writer', 1840, 420);
       b.wire(ren, 0, bat, 'Scr');
       b.feed(bat, [['Name', b.panel('Point_In_Time_Render_run_rpict_4118.bat', 270, 44, 'File name')],
         ['Dir', b.panel('C:\\kybele_UW_Greenhouse_April04\\point_in_time_render', 330, 44, 'Folder')],
         ['Quiet', b.toggle('Quiet', true)]], 46);
-      const out = b.node('Panel', 2010, 300, { text: '', w: 760, h: 480 }, 'Batch file');
+      const out = b.node('Panel', 2090, 300, { text: '', w: 760, h: 480 }, 'Batch file');
       b.wire(bat, 0, out, 0);
       return b.doc;
     }
@@ -275,7 +276,7 @@
     desc: 'Spectral materials and sky, rtrace with 21 bands from 380 to 780 nm and -co+, as in Spectral_Point_In_Time_run_pt.bat.',
     build() {
       const b = new Def('Spectral point-in-time');
-      b.note('Spectral point-in-time: 21 bands from 380 to 780 nm', 40, 0, 22);
+      b.note('Spectral point-in-time: 21 bands from 380 to 780 nm', 40, -40, 22);
       const scene = b.node('Rad.Scene', 470, 60);
       b.feed(scene, [['Files', b.panel('aluminum_frames_spectrum.rad\nconcrete_spectrum.rad\nground_spectrum.rad\nglazing1.rad\nenvelope.rad', 220, 0, 'Scene files')],
         ['Oct', b.panel('specmodel.oct', 120, 44, 'Octree')]]);

@@ -6,14 +6,9 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const vm = require('vm');
 
+const VR = require('./load.js');
 const root = path.join(__dirname, '..');
-globalThis.window = globalThis;
-['js/core/util.js', 'js/core/types.js', 'js/radiance/options.js', 'js/radiance/builders.js', 'js/core/graph.js',
-  'js/components/params.js', 'js/components/radiance.js', 'js/components/workflows.js', 'js/components/output.js',
-  'js/examples.js'].forEach((f) => vm.runInThisContext(fs.readFileSync(path.join(root, f), 'utf8'), { filename: f }));
-const VR = globalThis.VR;
 
 // Changes made on purpose. The original sun list used 145 x MF x MF + 1 suns (5221 for MF 6);
 // the Reinhart sky has 144 x MF x MF + 1 patches, and the extra 36 suns all land on the

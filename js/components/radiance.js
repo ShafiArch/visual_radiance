@@ -21,6 +21,12 @@
   K.receiver = { label: 'Sky receiver', text: (r) => r.file + ', Reinhart MF ' + r.mf + (r.write ? ', written by the batch file' : ', existing file') };
   K.sky = { label: 'Sky', text: (s) => (s.cmds && s.cmds.length ? s.cmds.join('\n') : s.file) };
   K.script = { label: 'Workflow script', text: (s) => B.compose([s], { comments: true, progress: true }) };
+  const MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  K.period = { label: 'Analysis period', text: (p) => MN[p.sm - 1] + ' ' + p.sd + ' to ' + MN[p.em - 1] + ' ' + p.ed + ', ' + p.sh + ' to ' + (p.eh + 1) + ' h' };
+  K.schedule = { label: 'Occupancy schedule', text: (s) => (s.file ? 'From ' + s.file : 'Occupied ' + s.start + ' to ' + s.end + ' h every day') };
+  K.bsdf = { label: 'BSDF', text: (b) => b.file + (b.pre && b.pre.length ? ' (made by genBSDF)' : '') };
+  K.aperture = { label: 'Window group', text: (a) => a.name + ': ' + a.glazing.join(', ') + ' with ' + a.bsdf + (a.facade ? ', facade aperture ' + a.facadeFiles.join(', ') : '') };
+  K.lum = { label: 'Luminaires', text: (l) => l.files.join(', ') + (l.pre && l.pre.length ? '\n' + l.pre.map((b) => b.cmds.join('\n')).join('\n') : '') };
 
   /* == coercion used by components that accept objects or plain text == */
 
@@ -82,6 +88,49 @@
   C.spectral = function (v) {
     if (isKind(v, 'spectral')) return v;
     return null;
+  };
+  C.period = function (v) {
+    if (isKind(v, 'period')) return v;
+    return null;
+  };
+  C.schedule = function (v) {
+    if (isKind(v, 'schedule')) return v;
+    if (typeof v === 'string' && v.trim()) {
+      const m = v.trim().match(/^(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)$/);
+      if (m) return { kind: 'schedule', start: Number(m[1]), end: Number(m[2]), file: '' };
+      return { kind: 'schedule', start: 0, end: 24, file: v.trim() };
+    }
+    return null;
+  };
+  C.bsdf = function (v) {
+    if (isKind(v, 'bsdf')) return v;
+    if (typeof v === 'string' && v.trim()) return { kind: 'bsdf', file: v.trim(), pre: [] };
+    return null;
+  };
+  // Luminaire inputs: file names, or Luminaire objects (which bring ies2rad steps).
+  C.lights = function (vals) {
+    const files = [];
+    const pre = [];
+    T.flat([vals]).forEach((v) => {
+      if (isKind(v, 'lum')) { v.files.forEach((f) => files.push(f)); (v.pre || []).forEach((b) => pre.push(b)); } else T.strList([v]).forEach((f) => files.push(f));
+    });
+    return { files, pre, objects: T.flat([vals]).filter((v) => isKind(v, 'lum')) };
+  };
+  // Points from Construct Point outputs, pairs of brackets or text with one "x y z" per line.
+  C.points = function (raw) {
+    const out = [];
+    const walk = (v) => {
+      if (Array.isArray(v)) {
+        if (v.length === 3 && v.every((x) => typeof x === 'number')) { out.push(v); return; }
+        v.forEach(walk);
+        return;
+      }
+      if (typeof v === 'string') { v.split(/\r?\n|;/).map((l) => l.trim()).filter(Boolean).forEach((l) => { const p = T.vec3(l); if (p) out.push(p); else out.push(null); }); return; }
+      const p = T.vec3(v);
+      out.push(p);
+    };
+    walk(raw);
+    return out;
   };
 
   // Read and check a Location (or a Weather object carrying one) from an input.
@@ -169,9 +218,10 @@
     inputs: [
       { name: 'Samples', nick: 'Bands', def: 20, desc: 'Number of spectral bands (-cs). Radiance allows up to 24 unless compiled with more.', hint: hint.int(3, 24, 20) },
       { name: 'Range', nick: 'Range', def: [380, 780], desc: 'Shortest and longest wavelength in nm (-cw).', hint: { widget: 'md', xmin: 300, xmax: 500, ymin: 600, ymax: 900, x: 380, y: 780, dec: 0 } },
-      { name: 'Output', nick: 'Out', def: 'co', desc: 'What rtrace writes: co (all bands), RGB, XYZ, Y (photopic), S (scotopic), M (melanopic) or A (radiometric).',
+      { name: 'Output', nick: 'Out', def: 'co', desc: 'What rtrace writes: co (all bands), RGB, XYZ, Y (photopic), S (scotopic), M (melanopic), A (radiometric), PAR (W/m2, 400 to 700 nm) or PPFD (umol/m2/s, 4.57 x PAR).',
         hint: hint.list([{ label: 'All bands (-co+)', value: 'co' }, { label: 'Photopic Y', value: 'Y' }, { label: 'Melanopic M', value: 'M' },
-          { label: 'Scotopic S', value: 'S' }, { label: 'CIE XYZ', value: 'XYZ' }, { label: 'RGB', value: 'RGB' }, { label: 'Radiometric A', value: 'A' }]) }
+          { label: 'Scotopic S', value: 'S' }, { label: 'CIE XYZ', value: 'XYZ' }, { label: 'RGB', value: 'RGB' }, { label: 'Radiometric A', value: 'A' },
+          { label: 'PAR (W/m2)', value: 'PAR' }, { label: 'PPFD (umol/m2/s)', value: 'PPFD' }]) }
     ],
     outputs: [{ name: 'Spectral', nick: 'Spec', desc: 'Spectral settings' }, { name: 'Options', nick: 'Txt', desc: 'Options as text' }],
     solve(ctx) {
@@ -181,10 +231,16 @@
       const cw = T.pair(ctx.raw(1));
       if (!cw) ctx.fail('Range needs two wavelengths, such as 380 780');
       const m = String(ctx.str(2) || 'co').trim().replace(/^-co\+?$/i, 'co').replace(/^-p/i, '');
-      const map = { co: 'co', spectral: 'co', rgb: 'RGB', xyz: 'XYZ', y: 'Y', photopic: 'Y', s: 'S', scotopic: 'S', m: 'M', melanopic: 'M', a: 'A', radiometric: 'A' };
+      const map = { co: 'co', spectral: 'co', rgb: 'RGB', xyz: 'XYZ', y: 'Y', photopic: 'Y', s: 'S', scotopic: 'S', m: 'M', melanopic: 'M', a: 'A', radiometric: 'A', par: 'PAR', ppfd: 'PPFD' };
       const mode = map[m.toLowerCase()];
-      if (!mode) ctx.fail('Output must be co, RGB, XYZ, Y, S, M or A');
-      const sp = { kind: 'spectral', cs, cw: [Math.min(cw[0], cw[1]), Math.max(cw[0], cw[1])], mode };
+      if (!mode) ctx.fail('Output must be co, RGB, XYZ, Y, S, M, A, PAR or PPFD');
+      let range = [Math.min(cw[0], cw[1]), Math.max(cw[0], cw[1])];
+      if ((mode === 'PAR' || mode === 'PPFD') && (range[0] !== 400 || range[1] !== 700)) {
+        range = [400, 700];
+        ctx.remark('PAR and PPFD use the photosynthetic range, 400 to 700 nm');
+      }
+      if (mode === 'PPFD') ctx.remark('PPFD = 4.57 x PAR, the usual factor for daylight; daily light integral = sum of hourly PPFD x 0.0036');
+      const sp = { kind: 'spectral', cs, cw: range, mode };
       return [sp, K.spectral.text(sp)];
     }
   });
@@ -448,6 +504,269 @@
       const sky = B.genssky(Object.assign({ loc, cloud, aod: ctx.has(5) ? ctx.num(5) : undefined, ground: ctx.has(6) ? ctx.num(6) : undefined,
         threads: ctx.has(7) ? ctx.int(7) : 0, file: ctx.str(8) || 'spectralsky.rad' }, t));
       return [sky, sky.cmds.join('\n')];
+    }
+  });
+
+  /* == Time == */
+
+  D({
+    type: 'Rad.Period', name: 'Analysis Period', nick: 'Period', group: 'Time', icon: 'period',
+    desc: 'A range of days and hours, as in Ladybug: from the start date to the end date, each day from the start hour to the end hour. Dates may wrap around the new year and hours around midnight.',
+    keywords: 'analysis period dates hours range season month day',
+    inputs: [
+      { name: 'Start month', nick: 'SM', def: 1, desc: 'Month, 1 to 12.', hint: hint.int(1, 12, 1) },
+      { name: 'Start day', nick: 'SD', def: 1, desc: 'Day of the month.', hint: hint.int(1, 31, 1) },
+      { name: 'Start hour', nick: 'SH', def: 0, desc: 'First hour of each day, 0 to 23 (0 is midnight to 1 am).', hint: hint.int(0, 23, 0) },
+      { name: 'End month', nick: 'EM', def: 12, desc: 'Month, 1 to 12.', hint: hint.int(1, 12, 12) },
+      { name: 'End day', nick: 'ED', def: 31, desc: 'Day of the month.', hint: hint.int(1, 31, 31) },
+      { name: 'End hour', nick: 'EH', def: 23, desc: 'Last hour of each day, 0 to 23 (23 ends at midnight).', hint: hint.int(0, 23, 23) }
+    ],
+    outputs: [{ name: 'Period', nick: 'Per', desc: 'Analysis period' }, { name: 'Hours', nick: 'Hrs', desc: 'Hours of the year in the period (0 to 8759), as ranges' }],
+    solve(ctx) {
+      const v = [0, 1, 2, 3, 4, 5].map((i) => ctx.int(i));
+      const [sm, sd, sh, em, ed, eh] = v;
+      [[sm, sd], [em, ed]].forEach(([m, d]) => {
+        if (m < 1 || m > 12) ctx.fail('Months must be 1 to 12');
+        if (d < 1 || d > B.MONTH_DAYS[m - 1]) ctx.fail('Day ' + d + ' does not exist in month ' + m + ' (no leap day)');
+      });
+      if (sh < 0 || sh > 23 || eh < 0 || eh > 23) ctx.fail('Hours must be 0 to 23');
+      const p = { kind: 'period', sm, sd, sh, em, ed, eh };
+      const s0 = B.CUM[sm - 1] + sd - 1;
+      const e0 = B.CUM[em - 1] + ed - 1;
+      const days = [];
+      for (let d = s0; ; d = (d + 1) % 365) { days.push(d); if (d === e0 || days.length > 365) break; }
+      const runs = [];
+      days.forEach((d) => {
+        const hs = [];
+        if (sh <= eh) { for (let h = sh; h <= eh; h += 1) hs.push(h); } else { for (let h = 0; h <= eh; h += 1) hs.push(h); for (let h = sh; h < 24; h += 1) hs.push(h); }
+        hs.forEach((h) => {
+          const x = d * 24 + h;
+          const last = runs[runs.length - 1];
+          if (last && x === last[1] + 1) last[1] = x; else runs.push([x, x]);
+        });
+      });
+      const text = runs.map((r) => (r[0] === r[1] ? String(r[0]) : r[0] + '-' + r[1])).join(', ');
+      return [p, text];
+    }
+  });
+
+  D({
+    type: 'Rad.Schedule', name: 'Occupancy Schedule', nick: 'Occ', group: 'Time', icon: 'schedule',
+    desc: 'Occupied hours for annual metrics and glare autonomy: the same hours every day (IES LM-83 uses 8 to 18), or a CSV file with one value per hour of the year (the last value on each line counts; lines starting with # are skipped).',
+    keywords: 'occupancy schedule occupied hours lm-83 csv daysim',
+    inputs: [
+      { name: 'Start', nick: 'Start', def: 8, desc: 'First occupied hour of the day.', hint: hint.int(0, 23, 8) },
+      { name: 'End', nick: 'End', def: 18, desc: 'Hour when occupancy ends (18 means up to 6 pm).', hint: hint.int(1, 24, 18) },
+      { name: 'File', nick: 'CSV', desc: 'Schedule file with 8760 lines, used instead of the hours (optional).', hint: hint.panel('occupancy.csv') }
+    ],
+    outputs: [{ name: 'Schedule', nick: 'Occ', desc: 'Occupancy schedule' }],
+    solve(ctx) {
+      const file = ctx.str(2) || '';
+      const start = ctx.num(0);
+      const end = ctx.num(1);
+      if (!file && (start < 0 || start > 24 || end < 0 || end > 24 || start === end)) ctx.fail('Start and End must be different hours between 0 and 24');
+      if (!file && start > end) ctx.remark('Occupied overnight, from ' + start + ' h to ' + end + ' h the next day');
+      return [{ kind: 'schedule', start, end, file }];
+    }
+  });
+
+  /* == Fenestration == */
+
+  const LAUNCH = [{ label: 'genBSDF', value: 'genBSDF' }, { label: 'perl -S genBSDF.pl (Perl script on PATH)', value: 'perl -S genBSDF.pl' }];
+  D({
+    type: 'Rad.BSDF', name: 'BSDF', nick: 'BSDF', group: 'Fenestration', icon: 'bsdf',
+    desc: 'A BSDF (XML) for a window or shading system. Give an existing file (for example from LBNL WINDOW), or connect the shading geometry and genBSDF makes it: Klems (145 x 145) for the three- to six-phase methods, or a tensor tree for renderings.',
+    keywords: 'bsdf xml genbsdf klems tensor tree blinds shading complex fenestration',
+    help: 'genBSDF expects the system with its width along X, height along Y and positive Z pointing into the room, with no geometry at positive Z. It is a Perl script: on Windows install Perl, and pick "perl -S genBSDF.pl" in this component\'s menu if the genBSDF command is not found.',
+    inputs: [
+      { name: 'XML', nick: 'XML', optional: false, desc: 'BSDF file name. Made by genBSDF when Geometry is connected, otherwise an existing file.', hint: hint.panel('clear.xml') },
+      { name: 'Geometry', nick: 'Geo', access: 'list', desc: 'Shading system files for genBSDF (materials and geometry), optional.', hint: hint.panel('blinds.mat\nblinds.rad') },
+      { name: 'Samples', nick: 'N', def: 2000, desc: 'Samples per incident direction (-c).', hint: hint.int(100, 20000, 2000) },
+      { name: 'Tensor tree', nick: 'Tree', def: 0, desc: '0 for Klems, or 4 to 7 for a rank 4 tensor tree (-t4).', hint: hint.int(0, 7, 0) },
+      { name: 'Options', nick: 'Opt', def: '-ab 5 -ad 700 -lw 3e-6', desc: 'rcontrib options for genBSDF (-r).', hint: hint.panel('-ab 5 -ad 700 -lw 3e-6') },
+      { name: 'Color', nick: 'C', def: false, desc: 'Keep color in the XML (+C).', hint: hint.toggle(false) },
+      { name: 'Processes', nick: 'Proc', def: 4, desc: 'Parallel processes (-n).', hint: hint.int(1, 32, 4) }
+    ],
+    outputs: [{ name: 'BSDF', nick: 'BSDF', desc: 'BSDF for a window group' }],
+    menu: [{ label: 'genBSDF command', key: 'launch', options: LAUNCH }],
+    init: () => ({ launch: 'genBSDF' }),
+    solve(ctx) {
+      const file = ctx.str(0);
+      if (!/\.xml$/i.test(file)) ctx.remark('BSDF files usually end in .xml');
+      const geo = T.strList(ctx.list(1));
+      const b = { kind: 'bsdf', file, pre: [] };
+      if (geo.length) {
+        const tree = ctx.int(3);
+        if (tree && (tree < 3 || tree > 8)) ctx.fail('Tensor tree must be 0 (Klems) or 4 to 7');
+        const cmd = B.join([ctx.state.launch || 'genBSDF', '-n', Math.max(1, ctx.int(6)), '-c', ctx.int(2), ctx.bool(5) ? '+C' : '',
+          tree ? '-t4 ' + tree : '', '-r "' + U.batEscape(ctx.str(4) || '') + '"', geo.map((f) => U.q(f)).join(' '), '>', U.q(file)]);
+        b.pre = [{ rem: 'BSDF from the shading geometry (genBSDF' + (tree ? ', tensor tree' : ', Klems') + ')', cmds: [cmd], key: 'bsdf|' + cmd, writes: [file] }];
+        if (tree) ctx.remark('Tensor trees suit renderings; the matrix methods need Klems (Tree 0)');
+      }
+      return [b];
+    }
+  });
+
+  const UPS = { z: ['Z', '0 0 1'], '+z': ['Z', '0 0 1'], '-z': ['-Z', '0 0 -1'], y: ['Y', '0 1 0'], '+y': ['Y', '0 1 0'], '-y': ['-Y', '0 -1 0'], x: ['X', '1 0 0'], '+x': ['X', '1 0 0'], '-x': ['-X', '-1 0 0'] };
+  D({
+    type: 'Rad.Aperture', name: 'Window Group', nick: 'WinGrp', group: 'Fenestration', icon: 'aperture',
+    desc: 'One window group for the three- to six-phase methods: its glazing polygons (facing into the room), its BSDF, and for four- and six-phase a facade aperture around the exterior shading. The batch file writes the receiver files (#@rfluxmtx h=kf) and a BSDF material version of the glazing.',
+    keywords: 'window group aperture glazing three phase five phase klems receiver facade f matrix',
+    help: 'Radiance treats window surfaces as facing into the room, and rfluxmtx sends rays from the back of a sender and receives them on the front of a receiver, so the same file serves as the receiver of the view matrix and the sender of the daylight matrix. Give only the glazing polygons: their material is replaced.',
+    inputs: [
+      { name: 'Glazing', nick: 'Glz', access: 'list', optional: false, desc: 'Files with the glazing polygons of this group, normals into the room.', hint: hint.panel('glazing.rad') },
+      { name: 'BSDF', nick: 'BSDF', optional: false, desc: 'BSDF component or XML file name (Klems basis).', hint: hint.panel('clear.xml') },
+      { name: 'Name', nick: 'Name', def: 'win', desc: 'Group name, used in file names.', hint: hint.panel('south') },
+      { name: 'Basis', nick: 'Basis', def: 'kf', desc: 'Klems basis: kf full (145), kh half, kq quarter. Must match the BSDF.', hint: hint.list([{ label: 'Klems full', value: 'kf' }, { label: 'Klems half', value: 'kh' }, { label: 'Klems quarter', value: 'kq' }]) },
+      { name: 'Up', nick: 'Up', def: 'Z', desc: 'Up direction: Z for walls, Y for skylights.', hint: hint.list([{ label: 'Z (walls)', value: 'Z' }, { label: 'Y (skylights)', value: 'Y' }]) },
+      { name: 'Flip', nick: 'Flip', def: false, desc: 'Reverse the polygons (xform -I) when they face out of the room.', hint: hint.toggle(true) },
+      { name: 'Facade', nick: 'F', access: 'list', desc: 'Facade aperture for four- and six-phase: polygons enclosing the exterior shading, facing the window (into the room).', hint: hint.panel('facade.rad') }
+    ],
+    outputs: [{ name: 'Window group', nick: 'Ap', desc: 'Window group for Annual (three- to six-phase)' }],
+    solve(ctx) {
+      const glazing = T.strList(ctx.list(0));
+      const bsdf = C.bsdf(ctx.raw(1));
+      if (!bsdf) ctx.fail('BSDF needs a BSDF component or an XML file name');
+      const name = String(ctx.str(2) || 'win').replace(/[^\w-]/g, '_');
+      const basis = String(ctx.str(3) || 'kf').toLowerCase();
+      if (['kf', 'kh', 'kq'].indexOf(basis) < 0) ctx.fail('Basis must be kf, kh or kq');
+      const up = UPS[String(ctx.str(4) || 'Z').toLowerCase()];
+      if (!up) ctx.fail('Up must be X, Y or Z (with - for the opposite direction)');
+      const inv = ctx.bool(5) ? '-I ' : '';
+      const facadeFiles = T.strList(ctx.list(6));
+      const rcv = name + '_ap.rad';
+      const brad = name + '_bsdf.rad';
+      const ff = name + '_F.rad';
+      const files = glazing.map((f) => U.q(f)).join(' ');
+      const cmds = [
+        'echo #@rfluxmtx h=' + basis + ' u=' + up[0] + ' > ' + rcv,
+        'echo void glow ' + name + '_glow 0 0 4 1 1 1 0 >> ' + rcv,
+        'xform ' + inv + '-m ' + name + '_glow ' + files + ' >> ' + rcv,
+        'echo void BSDF ' + name + '_bsdf 6 0 ' + U.q(bsdf.file) + ' ' + up[1] + ' . 0 0 > ' + brad,
+        'xform ' + inv + '-m ' + name + '_bsdf ' + files + ' >> ' + brad];
+      if (facadeFiles.length) {
+        cmds.push('echo #@rfluxmtx h=' + basis + ' u=' + up[0] + ' > ' + ff,
+          'echo void glow ' + name + '_Fglow 0 0 4 1 1 1 0 >> ' + ff,
+          'xform ' + inv + '-m ' + name + '_Fglow ' + facadeFiles.map((f) => U.q(f)).join(' ') + ' >> ' + ff);
+      }
+      const ap = { kind: 'aperture', name, glazing, bsdf: bsdf.file, basis, up: up[0], receiver: rcv, bsdfRad: brad,
+        facade: facadeFiles.length ? ff : null, facadeFiles,
+        pre: (bsdf.pre || []).concat([{ rem: 'Window group ' + name + ': receiver and sender file, and the glazing with its BSDF material', cmds,
+          key: 'ap|' + cmds.join('|'), writes: [rcv, brad].concat(facadeFiles.length ? [ff] : []) }]) };
+      return [ap];
+    }
+  });
+
+  /* == Lighting == */
+
+  D({
+    type: 'Rad.IES', name: 'IES Luminaire', nick: 'IES', group: 'Lighting', icon: 'ies',
+    desc: 'Converts an IES photometry file with ies2rad and places copies of the luminaire with xform at the given points (rotated about Z). Connect it to the Luminaires input of Electric, Render or Lighting Scenes; one component is one luminaire group.',
+    keywords: 'ies ies2rad luminaire photometry fixture layout electric lighting',
+    inputs: [
+      { name: 'IES file', nick: 'IES', optional: false, desc: 'IES photometry file.', hint: hint.panel('luminaire.ies') },
+      { name: 'Positions', nick: 'Pos', access: 'list', desc: 'Construct Point components or a panel with "x y z" per line. Empty: one luminaire at the origin.', hint: hint.panel('2 2 2.7\n4 2 2.7') },
+      { name: 'Rotation', nick: 'Rot', def: 0, access: 'list', desc: 'Rotation about Z in degrees: one value, or one per position.', hint: hint.slider(0, 360, 0, 0) },
+      { name: 'Units', nick: 'Units', def: 'm', desc: 'Model units for ies2rad (-d): m, c (cm), f (feet) or i (inches).', hint: hint.list([{ label: 'Meters', value: 'm' }, { label: 'Centimeters', value: 'c' }, { label: 'Feet', value: 'f' }, { label: 'Inches', value: 'i' }]) },
+      { name: 'Multiplier', nick: 'Mult', def: 1, desc: 'Output multiplier (-m), for lumen depreciation or dimming.', hint: hint.slider(0, 2, 2, 1) },
+      { name: 'Name', nick: 'Name', desc: 'Base name of the luminaire files (default: the IES file name).', hint: hint.panel('downlight') }
+    ],
+    outputs: [{ name: 'Luminaires', nick: 'Lum', desc: 'Luminaire group' }],
+    solve(ctx) {
+      const ies = ctx.str(0);
+      const pts = ctx.has(1) ? C.points(ctx.inputs[1].values) : [];
+      if (pts.some((p) => !p)) ctx.fail('Positions need three numbers per point, such as 2 2 2.7');
+      const rots = ctx.list(2).map(T.num);
+      if (rots.some((r) => !isFinite(r))) ctx.fail('Rotation needs numbers');
+      if (rots.length > 1 && rots.length !== pts.length) ctx.warn('Rotation has ' + rots.length + ' values for ' + pts.length + ' positions; the last value repeats');
+      const units = String(ctx.str(3) || 'm').toLowerCase()[0];
+      if ('mcfi'.indexOf(units) < 0) ctx.fail('Units must be m, c, f or i');
+      const mult = ctx.num(4);
+      const name = String(ctx.str(5) || U.basename(ies).replace(/\.ies$/i, '')).replace(/[^\w-]/g, '_') || 'luminaire';
+      const cmds = [B.join(['ies2rad -d' + units, '-t default', mult !== 1 ? '-m ' + U.fmt(mult) : '', '-o', name, U.q(ies)])];
+      let file = name + '.rad';
+      if (pts.length) {
+        file = name + '_layout.rad';
+        pts.forEach((p, i) => {
+          const r = rots.length ? rots[Math.min(i, rots.length - 1)] : 0;
+          cmds.push(B.join(['xform', r ? '-rz ' + U.fmt(r) : '', '-t', p.map(U.fmt).join(' '), name + '.rad', i ? '>>' : '>', file]));
+        });
+      } else ctx.remark('No positions: one luminaire at the origin');
+      return [{ kind: 'lum', files: [file], name, count: Math.max(1, pts.length),
+        pre: [{ rem: 'Luminaire ' + name + ' from ' + U.basename(ies) + (pts.length ? ', ' + pts.length + ' positions' : ''), cmds,
+          key: 'ies|' + cmds.join('|'), writes: [name + '.rad', name + '.dat'].concat(pts.length ? [file] : []) }] }];
+    }
+  });
+
+  /* == advanced settings == */
+
+  D({
+    type: 'Rad.PhotonMap', name: 'Photon Map', nick: 'PMap', group: 'Settings', icon: 'pmap',
+    desc: 'Adds a photon map to Radiance Parameters: the workflow runs mkpmap after its octree and adds -ap to rtrace or rpict. For daylight, name the window modifiers as photon ports so photons enter through the openings.',
+    keywords: 'photon map mkpmap caustic global ports apo ap',
+    help: 'With a photon map, any positive -ab works like -ab 1 (one final gather). Photon maps suit light pipes, redirecting systems and caustics; ports are the glazing modifiers, facing into the room.',
+    inputs: [
+      { name: 'Parameters', nick: 'Par', desc: 'Radiance Parameters to extend. Medium preset when empty.' },
+      { name: 'Global photons', nick: 'Glob', def: '1m', desc: 'Photons in the global map (-apg), for example 500k or 2m.', hint: hint.panel('1m') },
+      { name: 'Caustic photons', nick: 'Caus', desc: 'Photons in a caustic map (-apc), optional.', hint: hint.panel('100k') },
+      { name: 'Ports', nick: 'Ports', access: 'list', desc: 'Modifiers acting as photon ports (-apo), one per line.', hint: hint.panel('glass_mat') },
+      { name: 'Bandwidth', nick: 'Bw', def: 50, desc: 'Photons per density estimate (-ap file N).', hint: hint.int(10, 500, 50) },
+      { name: 'Name', nick: 'Name', def: 'pmap', desc: 'Photon map file name, without extension.', hint: hint.panel('pmap') }
+    ],
+    outputs: [{ name: 'Parameters', nick: 'Par', desc: 'Parameters with the photon map' }],
+    solve(ctx) {
+      const base = ctx.has(0) ? C.params(ctx.raw(0)) : { kind: 'params', values: Object.assign({}, R.PRESETS.medium.values), raw: '', label: 'Medium', preset: 'medium' };
+      if (!base) ctx.fail('Parameters needs a Radiance Parameters component');
+      const count = (v, label) => {
+        const t = String(v).trim().toLowerCase();
+        if (!/^\d+(\.\d+)?[km]?$/.test(t)) ctx.fail(label + ' must be a number such as 500000, 500k or 1m');
+        return t;
+      };
+      const global = count(ctx.str(1) || '1m', 'Global photons');
+      const caustic = ctx.has(2) ? count(ctx.str(2), 'Caustic photons') : '';
+      const ports = T.strList(ctx.list(3));
+      const name = String(ctx.str(5) || 'pmap').replace(/[^\w-]/g, '_');
+      if (!ports.length) ctx.remark('No photon ports: fine for electric light, slow or noisy for daylight');
+      const pmap = { global, caustic, ports, bw: Math.max(1, ctx.int(4)), file: name + '.gpm', cfile: name + '.cpm' };
+      return [Object.assign({}, base, { pmap, label: (base.label ? base.label + ', ' : '') + 'photon map' })];
+    }
+  });
+
+  D({
+    type: 'Rad.Illum', name: 'Illum Windows', nick: 'mkillum', group: 'Model', icon: 'illum',
+    desc: 'Turns windows or skylights into secondary light sources with mkillum, for faster and smoother renderings. Builds an octree of the scene with the sky, runs mkillum on the window surfaces, and outputs the scene with the illum file added.',
+    keywords: 'mkillum illum secondary source window skylight',
+    help: 'Give the scene without the window surfaces, and the window files separately (normals into the room, materials defined in the scene). Use the same sky in the workflow.',
+    inputs: [
+      { name: 'Scene', nick: 'Scene', access: 'list', optional: false, desc: 'Scene component or files, without the windows.' },
+      { name: 'Sky', nick: 'Sky', optional: false, desc: 'Sky component or file (the same sky as the workflow).' },
+      { name: 'Windows', nick: 'Win', access: 'list', optional: false, desc: 'Files with the window surfaces.', hint: hint.panel('windows.rad') },
+      { name: 'Parameters', nick: 'Par', desc: 'rtrace options for mkillum. Default -ab 2 -ad 1024 -as 512 -aa 0.1 -lw 0.002.' },
+      { name: 'Output', nick: 'Out', def: 'illum.rad', desc: 'Illum file name.', hint: hint.panel('illum.rad') },
+      { name: 'Processes', nick: 'Proc', desc: 'Parallel processes (-n), optional.', hint: hint.int(1, 32, 4) }
+    ],
+    outputs: [{ name: 'Scene', nick: 'Scn', desc: 'Scene with the illum windows' }],
+    solve(ctx) {
+      const scene = C.scene(ctx.list(0));
+      if (!scene) ctx.fail('Scene needs a Scene component or file names');
+      const sky = C.sky(ctx.raw(1));
+      if (!sky) ctx.fail('Sky needs a sky component or a sky file name');
+      const wins = T.strList(ctx.list(2));
+      const params = ctx.has(3) ? C.params(ctx.raw(3)) : { kind: 'params', values: { ab: 2, ad: 1024, as: 512, aa: 0.1, lw: 0.002 }, raw: '', label: '', preset: 'none' };
+      if (!params) ctx.fail('Parameters needs a Radiance Parameters component or an option string');
+      const out = ctx.str(4) || 'illum.rad';
+      const oct = out.replace(/\.rad$/i, '') + '_sky.oct';
+      const o = B.octree(scene, [sky.file], oct, false);
+      const n = ctx.has(5) ? ctx.int(5) : 0;
+      const src = wins.length === 1 ? '< ' + U.q(wins[0]) : '';
+      const mk = B.join([wins.length > 1 ? 'type ' + wins.map((f) => U.q(f)).join(' ') + ' |' : '', 'mkillum', n > 1 ? '-n ' + n : '', B.opts(params, 'rtrace'), U.q(o.oct), src, '>', U.q(out)]);
+      const pre = [];
+      if (sky.cmds && sky.cmds.length) pre.push(B.skyBlock(sky, 'Sky for mkillum'));
+      pre.push({ rem: 'Illum sources for the windows (mkillum)', cmds: o.cmds.concat([mk]), key: 'illum|' + mk, writes: [out, o.oct] });
+      const res = Object.assign({}, scene, { pre: (scene.pre || []).concat(pre) });
+      if (scene.prebuilt) res.extra = (scene.extra || []).concat([out]);
+      else res.files = scene.files.concat([out]);
+      return [res];
     }
   });
 })(window.VR);

@@ -18,11 +18,97 @@
   B.script = function (o) {
     return Object.assign({
       kind: 'script', name: '', title: '', info: [], start: null, end: null,
-      setup: [], blocks: [], subs: [], outputs: []
+      setup: [], blocks: [], subs: [], outputs: [], deps: [], result: null
     }, o);
   };
 
   B.opts = (params, cmd) => (params ? R.formatOptions(params, cmd) : '');
+
+  /* == quantities ==
+     One table for every workflow. irr: computed at sensor points with -I (or
+     images with rpict -i); coef: RGB weights for rcalc (one weight when the
+     output already has a single channel). */
+  const W3 = [0.265, 0.67, 0.065];
+  B.QTY = {
+    rgb: { label: 'RGB (raw)', unit: 'W/m2 per channel', irr: true, coef: null },
+    illuminance: { label: 'Illuminance', unit: 'lux', irr: true, coef: B.LUX, mtx: '-c 47.4 119.9 11.6' },
+    irradiance: { label: 'Irradiance', unit: 'W/m2', irr: true, coef: W3, mtx: '-c 0.265 0.67 0.065' },
+    luminance: { label: 'Luminance', unit: 'cd/m2', irr: false, coef: B.LUX, mtx: '-c 47.4 119.9 11.6' },
+    radiance: { label: 'Radiance', unit: 'W/sr/m2', irr: false, coef: W3, mtx: '-c 0.265 0.67 0.065' },
+    df: { label: 'Daylight factor', unit: '%', irr: true, coef: [0.474, 1.199, 0.116], sky: 'overcast' },
+    skyview: { label: 'Sky view', unit: '%', irr: true, coef: [31.831], sky: 'uniform' },
+    melanopic: { label: 'Melanopic EDI', unit: 'lux', irr: true, out: '-pM', coef: [0.909091], mtx: '-c M -s 0.909091' }
+  };
+  const QALIAS = {
+    raw: 'rgb', rgb: 'rgb', none: 'rgb', 'rgb irradiance': 'rgb', lux: 'illuminance', illuminance: 'illuminance', e: 'illuminance',
+    irradiance: 'irradiance', 'w/m2': 'irradiance', luminance: 'luminance', 'cd/m2': 'luminance', l: 'luminance',
+    radiance: 'radiance', df: 'df', 'daylight factor': 'df', daylightfactor: 'df', skyview: 'skyview', 'sky view': 'skyview',
+    svf: 'skyview', 'sky view factor': 'skyview', 'sky exposure': 'skyview', melanopic: 'melanopic', 'melanopic edi': 'melanopic',
+    'm-edi': 'melanopic', medi: 'melanopic', edi: 'melanopic'
+  };
+  // A quantity key from text, or from True/False (the old Lux toggle).
+  B.qtyKey = function (v, fallback) {
+    if (v === undefined || v === null || v === '') return fallback || 'illuminance';
+    if (typeof v === 'boolean') return v ? 'illuminance' : 'rgb';
+    const t = String(v).trim().toLowerCase();
+    if (t === 'true') return 'illuminance';
+    if (t === 'false') return 'rgb';
+    return QALIAS[t] || null;
+  };
+  B.qtyItems = (keys) => keys.map((k) => ({ label: B.QTY[k].label, value: k }));
+  B.rcalcConv = function (coef) {
+    if (!coef) return '';
+    if (coef.length === 1) return '$1=' + U.fmt(coef[0]) + '*$1';
+    return '$1=' + coef.map((w, i) => U.fmt(w) + '*$' + (i + 1)).join('+');
+  };
+  B.pipeConv = (coef) => (coef ? ' | rcalc -e "' + B.rcalcConv(coef) + '"' : '');
+
+  // Standard skies the quantities need: a CIE overcast sky with 10,000 lux
+  // diffuse horizontal illuminance (55.866 W/m2) and a uniform glowing dome of
+  // radiance 1 for sky view.
+  B.overcastSky = (file) => ({ kind: 'sky', source: 'overcast', file,
+    cmds: ['gensky -ang 45 0 -c -B 55.866 > ' + q(file)].concat(B.domeLines(file)) });
+  B.uniformSky = (file) => ({ kind: 'sky', source: 'uniform', file, cmds: [
+    'echo void glow sky_glow 0 0 4 1 1 1 0 > ' + q(file),
+    'echo sky_glow source sky 0 0 4 0 0 1 180 >> ' + q(file)] });
+  B.rxBlock = (rx) => ({ rem: 'Sky receiver (Reinhart MF ' + rx.mf + ')', cmds: B.receiverLines(rx),
+    key: 'rx|' + rx.file + '|' + rx.mf + '|' + rx.up, writes: [rx.file] });
+  B.skyBlock = (sky, rem) => ({ rem, cmds: sky.cmds.slice(), key: 'sky|' + sky.cmds.join('|'), writes: [sky.file] });
+
+  // Blocks that input objects bring along (ies2rad, genBSDF, mkillum, receiver
+  // files). They carry a key so a batch file runs each one once.
+  B.preBlocks = function (objs) {
+    const out = [];
+    const seen = new Set();
+    T_flat(objs).forEach((o) => {
+      if (!o || typeof o !== 'object' || !Array.isArray(o.pre)) return;
+      o.pre.forEach((b) => {
+        const k = b.key || b.cmds.join('|');
+        if (seen.has(k)) return;
+        seen.add(k);
+        out.push(Object.assign({ key: k }, b));
+      });
+    });
+    return out;
+  };
+  function T_flat(v) {
+    const out = [];
+    (function walk(x) { if (Array.isArray(x)) x.forEach(walk); else if (x) out.push(x); })(v);
+    return out;
+  }
+
+  /* == photon map (carried by a Parameters object as params.pmap) == */
+  B.pmapOpts = function (pm) {
+    if (!pm) return '';
+    const a = ['-ap ' + q(pm.file) + ' ' + pm.bw];
+    if (pm.caustic) a.push('-ap ' + q(pm.cfile) + ' ' + pm.bw);
+    return a.join(' ');
+  };
+  B.pmapBlock = function (pm, oct, procs) {
+    return { rem: 'Photon map (' + pm.global + ' global photons' + (pm.caustic ? ', ' + pm.caustic + ' caustic' : '') + ')',
+      cmds: [join(['mkpmap -apg', q(pm.file), pm.global, pm.caustic ? '-apc ' + q(pm.cfile) + ' ' + pm.caustic : '',
+        pm.ports.map((m) => '-apo' + (pm.portDir || '') + ' ' + m).join(' '), procs > 1 ? '-n ' + procs : '', q(oct)])] };
+  };
 
   /* == shared pieces == */
 
@@ -39,7 +125,7 @@
   // oconv line for a scene plus extra files (sky, luminaires). A prebuilt octree
   // is used directly, or extended with "oconv -i" when extra files are given.
   B.octree = function (scene, extra, oct, freeze) {
-    const more = (extra || []).filter(Boolean);
+    const more = ((scene && scene.extra) || []).concat(extra || []).filter(Boolean);
     if (scene && scene.prebuilt) {
       if (!more.length) return { cmds: [], oct: scene.oct };
       return { cmds: [join(['oconv -i', q(scene.oct), more.map((f) => q(f)).join(' '), '>', q(oct)])], oct };
@@ -113,7 +199,10 @@
   };
 
   B.specFlags = (sp) => '-cs ' + sp.cs + ' -cw ' + U.fmt(sp.cw[0]) + ' ' + U.fmt(sp.cw[1]);
-  B.specOut = (sp) => (sp.mode === 'co' ? '-co+' : '-p' + sp.mode);
+  // PAR is the radiometric total (-pA) over 400 to 700 nm; PPFD converts it with
+  // 4.57 umol/J, the usual factor for daylight.
+  B.specOut = (sp) => (sp.mode === 'co' ? '-co+' : sp.mode === 'PAR' || sp.mode === 'PPFD' ? '-pA' : '-p' + sp.mode);
+  B.specPipe = (sp) => (sp.mode === 'PPFD' ? ' | rcalc -e "$1=4.57*$1"' : '');
 
   B.hourDate = function (h) {
     let doy = Math.floor(h / 24);
@@ -155,8 +244,10 @@
     const s2 = '_part' + P;
     const rx = c.receiver;
     const mf = c.sunMF;
-    const s = B.script({ name: 'Annual illuminance' });
-    s.title = 'Radiance annual illuminance batch, part ' + P + (c.params && c.params.label ? ', ' + c.params.label : '');
+    const qk = c.quantity || 'illuminance';
+    const Q = B.QTY[qk];
+    const s = B.script({ name: 'Annual ' + (qk === 'rgb' ? 'irradiance' : Q.label.toLowerCase()) });
+    s.title = 'Radiance annual ' + (qk === 'rgb' ? 'RGB irradiance' : Q.label.toLowerCase()) + ' batch, part ' + P + (c.params && c.params.label ? ', ' + c.params.label : '');
     s.info = ['Weather file: ' + c.weather.path].concat(sceneInfo(c.scene),
       ['Black scene: ' + (c.black.prebuilt ? c.black.oct : c.black.files.join(', ')),
         'Sky receiver: ' + rx.file + ' (MF ' + rx.mf + ')', 'Sun patches: Reinhart MF ' + mf,
@@ -183,20 +274,21 @@
     const pts = q(c.grid.path);
     const n = c.procs > 1 ? '-n ' + c.procs : '';
     const prm = B.opts(c.params, 'rfluxmtx');
-    const conv = 'rmtxop -fa -t -c ' + B.LUX.join(' ') + ' -';
+    const I = Q.irr ? '-I+' : '';
+    const conv = join(['rmtxop -fa -t', Q.mtx || '', '-']);
     const sunCount = 144 * mf * mf + 1;
 
-    if (rx.write) s.blocks.push({ rem: 'Sky receiver (Reinhart MF ' + rx.mf + ')', cmds: B.receiverLines(rx) });
+    if (rx.write) s.blocks.push(B.rxBlock(rx));
     s.blocks.push({ rem: 'Weather file and sky matrix', cmds: [
       'epw2wea ' + q(c.weather.path) + ' ' + wea,
       'gendaymtx -m ' + rx.mf + ' ' + wea + ' > ' + smx] });
     s.blocks.push({ rem: 'Daylight coefficients, full scene', cmds: [
       B.octree(c.scene, [], aoct, c.scene.freeze).cmds[0] || ('copy /y ' + q(c.scene.oct) + ' ' + aoct),
-      join(['rfluxmtx -I+ -y', y, prm, n, '-', q(rx.file), '-i', aoct, '<', pts, '>', ill]),
+      join(['rfluxmtx', I, '-y', y, prm, n, '-', q(rx.file), '-i', aoct, '<', pts, '>', ill]),
       'dctimestep ' + ill + ' ' + smx + ' | ' + conv + ' > ' + rT] });
     s.blocks.push({ rem: 'Daylight coefficients, black scene with sun-only sky (direct part)', cmds: [
       B.octree(c.black, [], boct, c.black.freeze).cmds[0] || ('copy /y ' + q(c.black.oct) + ' ' + boct),
-      join(['rfluxmtx -I+ -y', y, prm, n, '-', q(rx.file), '-i', boct, '<', pts, '>', bill]),
+      join(['rfluxmtx', I, '-y', y, prm, n, '-', q(rx.file), '-i', boct, '<', pts, '>', bill]),
       'gendaymtx -m ' + rx.mf + ' -d ' + wea + ' > ' + smxd,
       'dctimestep ' + bill + ' ' + smxd + ' | ' + conv + ' > ' + rD] });
     const blackFiles = c.black.prebuilt ? null : c.black.files.map((f) => q(f)).join(' ');
@@ -206,47 +298,67 @@
         ' -e Rbin=recno -o "solar source sun 0 0 4 ${Dx} ${Dy} ${Dz} 0.533" >> ' + suns,
       blackFiles ? 'oconv -f ' + blackFiles + ' ' + suns + ' > ' + soct
         : 'oconv -i ' + q(c.black.oct) + ' ' + suns + ' > ' + soct,
-      join(['rcontrib -I+', B.opts(c.sunParams, 'rcontrib'), '-y', y, n,
+      join(['rcontrib', I, B.opts(c.sunParams, 'rcontrib'), '-y', y, n,
         '-fa -e MF:' + mf + ' -f reinhart.cal -b rbin -bn Nrbins -m solar', soct, '<', pts, '>', cds]),
       'gendaymtx -5 0.533 -d -m ' + mf + ' ' + wea + ' > ' + smxs,
       'dctimestep ' + cds + ' ' + smxs + ' | ' + conv + ' > ' + rS] });
     s.blocks.push({ rem: 'Final result: total minus direct-only plus direct sun', cmds: [
       'rmtxop ' + rT + ' + -s -1 ' + rD + ' + ' + rS + ' > ' + rF] });
     s.outputs = [rF];
+    s.result = { type: 'annual', file: rF, direct: rS, quantity: qk, unit: Q.unit, grid: c.grid, weather: c.weather.path, method: 'dds' };
     return s;
   };
 
-  // Point-in-time illuminance at sensor points (daylight with a sky, or electric light).
+  // Point-in-time values at sensor points (daylight with a sky, or electric light).
+  // quantity picks rtrace -I or plain rays, the rcalc conversion and, for
+  // daylight factor and sky view, a standard sky of its own.
   B.pit = function (c) {
     const electric = !!c.electric;
-    const s = B.script({ name: electric ? 'Electric illuminance' : 'Point-in-time illuminance' });
+    const qk = c.quantity || (c.lux ? 'illuminance' : 'rgb');
+    const Q = B.QTY[qk];
+    const qname = qk === 'rgb' ? 'illuminance' : Q.label.toLowerCase();
+    const s = B.script({ name: (electric ? 'Electric ' : 'Point-in-time ') + qname });
     const label = c.params && c.params.label ? ', ' + c.params.label : '';
-    s.title = 'Radiance rtrace batch, ' + (electric ? 'electric lighting' : 'point-in-time illuminance') + label;
+    s.title = 'Radiance rtrace batch, ' + (electric ? 'electric lighting' : 'point-in-time ' + qname) + label;
     s.start = 'Running Radiance Simulation';
     s.end = 'Done!';
-    const sky = B.skyOf(c.sky);
+    let sky = B.skyOf(c.sky);
+    if (!electric && Q.sky === 'overcast') sky = B.overcastSky(c.skyFile || 'df_sky.rad');
+    if (!electric && Q.sky === 'uniform') sky = B.uniformSky(c.skyFile || 'skyview_sky.rad');
     const lights = c.lights || [];
     s.info = sceneInfo(c.scene);
     if (sky) s.info.push('Sky file: "' + sky.file + '"');
     if (lights.length) s.info.push('Luminaires: ' + lights.join(', '));
     s.info.push('Sensor points: ' + c.grid.path);
-    if (sky && sky.cmds.length) s.blocks.push({ rem: 'Sky for this point in time', cmds: sky.cmds.slice() });
+    (c.pre || []).forEach((b) => s.blocks.push(b));
+    if (sky && sky.cmds.length) {
+      const rem = Q.sky === 'overcast' ? 'CIE overcast sky with 10,000 lux diffuse horizontal illuminance'
+        : Q.sky === 'uniform' ? 'Uniform sky of radiance 1 (upper hemisphere only)' : 'Sky for this point in time';
+      s.blocks.push(B.skyBlock(sky, rem));
+    }
     const extra = (sky ? [sky.file] : []).concat(lights);
-    const octName = (c.scene && !c.scene.prebuilt && c.scene.oct) || 'model.oct';
+    const octName = (c.scene && !c.scene.prebuilt && c.scene.oct) || (Q.sky ? U.basename(c.out).replace(/\.\w+$/, '') + '.oct' : 'model.oct');
     const o = B.octree(c.scene, extra, octName, c.scene && c.scene.freeze);
     if (o.cmds.length) s.blocks.push({ rem: 'Build octree', cmds: o.cmds });
-    let cmd = join(['rtrace -I -h', B.opts(c.params, 'rtrace'), c.procs > 1 ? '-n ' + c.procs : '',
-      c.amb ? '-af ' + q(c.amb) : '', q(o.oct), '<', q(c.grid.path)]);
-    if (c.lux) cmd += ' | rcalc -e "$1=' + B.LUX[0] + '*$1+' + B.LUX[1] + '*$2+' + B.LUX[2] + '*$3"';
+    const pm = c.params && c.params.pmap;
+    if (pm) s.blocks.push(B.pmapBlock(pm, o.oct, c.procs));
+    let cmd = join(['rtrace', Q.irr ? '-I' : '', '-h', B.opts(c.params, 'rtrace'), B.pmapOpts(pm), Q.out || '',
+      c.procs > 1 ? '-n ' + c.procs : '', c.amb ? '-af ' + q(c.amb) : '', q(o.oct), '<', q(c.grid.path)]);
+    cmd += B.pipeConv(Q.coef);
     cmd += ' > ' + q(c.out);
-    s.blocks.push({ rem: c.lux ? 'Trace sensor points (illuminance in lux)' : 'Trace sensor points (RGB irradiance)', cmds: [cmd] });
+    s.blocks.push({ rem: qk === 'rgb' ? 'Trace sensor points (RGB irradiance)' : 'Trace sensor points (' + Q.label.toLowerCase() + ' in ' + Q.unit + ')', cmds: [cmd] });
     s.outputs = [c.out];
+    s.result = { type: 'grid', file: c.out, quantity: qk, unit: Q.unit, grid: c.grid, columns: Q.coef ? 1 : 3 };
     return s;
   };
 
   // Point-in-time image with rpict, an optional low resolution warm-up pass to fill
   // the ambient cache, then pcompos, pfilt and the view written into the header.
+  // quantity: luminance (default), or illuminance, irradiance and daylight factor
+  // images rendered with rpict -i. layers: rtpict output types (v r x l L R X n N s m M).
   B.render = function (c) {
+    const qk = c.quantity || 'luminance';
+    const Q = B.QTY[qk];
     const s = B.script({ name: 'Point-in-time render' });
     const tag = c.tag === undefined || c.tag === null ? '' : String(c.tag).trim();
     const t = tag ? '_' + tag : '';
@@ -254,7 +366,8 @@
     const ql = label ? ' (' + label + ')' : '';
     s.title = 'Radiance rpict batch' + (tag ? (/^\d+$/.test(tag) ? ' for hour ' : ' for ') + tag : '') +
       (label ? ', ' + label : '');
-    const sky = B.skyOf(c.sky);
+    let sky = B.skyOf(c.sky);
+    if (Q.sky === 'overcast') sky = B.overcastSky('df_sky' + t + '.rad');
     const lights = c.lights || [];
     s.info = [];
     if (sky) s.info.push('Sky file: "' + sky.file + '"');
@@ -262,7 +375,9 @@
     else if (c.scene) s.info.push('Envelope files: ' + c.scene.files.join(', '));
     if (lights.length) s.info.push((lights.length > 1 ? 'Luminaires files: ' : 'Luminaires file: ') +
       lights.map((f) => '"' + f + '"').join(', '));
-    if (sky && sky.cmds.length) s.blocks.push({ rem: 'Sky for this hour', cmds: sky.cmds.slice() });
+    if (qk !== 'luminance') s.info.push('Pixel values: ' + Q.label.toLowerCase() + ' (rpict -i)');
+    (c.pre || []).forEach((b) => s.blocks.push(b));
+    if (sky && sky.cmds.length) s.blocks.push(B.skyBlock(sky, Q.sky === 'overcast' ? 'CIE overcast sky with 10,000 lux diffuse horizontal illuminance' : 'Sky for this hour'));
 
     const extra = (sky ? [sky.file] : []).concat(lights);
     const octName = (c.scene && !c.scene.prebuilt && c.scene.oct) || ('model' + t + '.oct');
@@ -270,36 +385,47 @@
     if (o.cmds.length) {
       s.blocks.push({ rem: '0) Build octree with sky (and luminaires)' + (tag ? ' for this hour' : ''), cmds: o.cmds });
     }
+    const pm = c.params && c.params.pmap;
+    if (pm) s.blocks.push(B.pmapBlock(pm, o.oct, c.procs || 0));
     const view = B.viewText(c.view);
     const img = c.image;
     const amb = c.amb || ('render' + t + '.amb');
     const report = img.report > 0 ? '-t ' + img.report : '';
+    const irr = qk !== 'luminance' && qk !== 'radiance' ? '-i' : '';
     const preview = 'IMG' + t + '_preview.unf';
     const raw = 'IMG' + t + '_0.unf';
     const tmp = 'temp' + t + '.hdr';
     const err = 'error' + t + '.log';
-    const out = c.out || ('Luminance' + t + '.hdr');
+    const out = c.out || ((qk === 'luminance' ? 'Luminance' : qk === 'df' ? 'DaylightFactor' : Q.label.replace(/\s+/g, '')) + t + '.hdr');
     let step = 1;
     if (img.warm > 0) {
       s.blocks.push({ rem: (step++) + ') Low-res warm-up to populate ambient cache' + ql, cmds: [
-        join(['rpict', report, view, '-x', img.warm, '-y', img.warm, '-af', q(amb),
-          B.opts(c.warmParams || c.params, 'rpict'), q(o.oct), '>', preview]),
+        join(['rpict', report, irr, view, '-x', img.warm, '-y', img.warm, '-af', q(amb),
+          B.opts(c.warmParams || c.params, 'rpict'), B.pmapOpts(pm), q(o.oct), '>', preview]),
         'del ' + preview] });
     }
     s.blocks.push({ rem: (step++) + ') High-res main render' + ql, cmds: [
-      join(['rpict', report, view, '-x', img.x, '-y', img.y, '-af', q(amb), B.opts(c.params, 'rpict'),
+      join(['rpict', report, irr, view, '-x', img.x, '-y', img.y, '-af', q(amb), B.opts(c.params, 'rpict'), B.pmapOpts(pm),
         '-e', err, q(o.oct), '>', raw])] });
     const d = Math.max(1, Math.round(img.down || 1));
     const fx = Math.round(img.x / d);
     const fy = Math.round(img.y / d);
     const header = 'getinfo -a "VIEW= ' + view + ' -x ' + fx + ' -y ' + fy + '"';
-    s.blocks.push({ rem: step + ') Convert to HDR, ' + (d > 1 ? 'filter and downsample to final resolution' : 'add the view to the header'), cmds: [
+    s.blocks.push({ rem: (step++) + ') Convert to HDR, ' + (d > 1 ? 'filter and downsample to final resolution' : 'add the view to the header'), cmds: [
       'pcompos -a 1 ' + raw + ' > ' + tmp,
       (d > 1 ? 'pfilt -r 0.6 -x /' + d + ' -y /' + d + ' ' + tmp + ' | ' + header : header + ' < ' + tmp) + ' > ' + q(out),
       'del ' + tmp,
       'del ' + raw] });
+    if (c.layers) {
+      const dir = c.layerDir || ('layers' + t);
+      s.blocks.push({ rem: step + ') Image layers with rtpict (' + c.layers.split('').join(' ') + ') in ' + dir, cmds: [
+        join(['rtpict -n', Math.max(2, c.procs || 2), '-o' + c.layers, q(dir), irr, view, '-x', fx, '-y', fy, '-af', q(amb),
+          B.opts(c.params, 'rpict'), B.pmapOpts(pm), q(o.oct)])] });
+    }
     s.end = 'Done. Output: ' + out;
     s.outputs = [out];
+    const vt = typeof c.view === 'string' ? (c.view.match(/-vt(\w)/) || [])[1] : c.view.type;
+    s.result = { type: 'image', files: [out], quantity: qk, unit: Q.unit, view, fisheye: vt === 'h' || vt === 'a', images: 1 };
     return s;
   };
 
@@ -320,8 +446,9 @@
     s.blocks.push({ rem: 'Trace sensor points with spectral sampling', cmds: [
       join(['rtrace -I -h', B.specFlags(c.spectral), B.opts(c.params, 'rtrace'), c.procs > 1 ? '-n ' + c.procs : '',
         c.amb ? '-af ' + q(c.amb) : '', c.log ? '-e ' + q(c.log) : '', B.specOut(c.spectral),
-        q(o.oct), '<', q(c.grid.path), '>', q(c.out)])] });
+        q(o.oct), '<', q(c.grid.path)]) + B.specPipe(c.spectral) + ' > ' + q(c.out)] });
     s.outputs = [c.out];
+    s.result = { type: 'grid', file: c.out, quantity: 'spectral', unit: c.spectral.mode === 'PPFD' ? 'umol/m2/s' : c.spectral.mode === 'PAR' ? 'W/m2' : '', grid: c.grid };
     return s;
   };
 
@@ -366,7 +493,7 @@
       join(['genssky %2 %3 %4', B.locArgs(c.loc), c.threads ? '-n ' + c.threads : '', '%~5', '-f', pre + 'sky_%1', '>', sky]),
       oconv,
       join(['rtrace -I -h', B.specFlags(c.spectral), B.opts(c.params, 'rtrace'), c.procs > 1 ? '-n ' + c.procs : '',
-        B.specOut(c.spectral), oct, '<', q(c.grid.path), '>', pre + '_%1.res']),
+        B.specOut(c.spectral), oct, '<', q(c.grid.path)]) + B.specPipe(c.spectral) + ' > ' + pre + '_%1.res',
       'goto :eof'
     ];
     s.outputs = calls.map((line) => pre + '_' + line.split(' ')[2] + '.res');
@@ -382,9 +509,26 @@
     return ['set "PATH=' + root + '\\bin;%PATH%"', 'set "RAYPATH=.;' + lib + '"'];
   };
 
+  // Scripts plus the scripts they depend on (post-processing needs its
+  // simulation first), each once, dependencies first.
+  B.expand = function (scripts) {
+    const out = [];
+    const seen = new Set();
+    const add = (s) => {
+      if (!s || seen.has(s)) return;
+      seen.add(s);
+      (s.deps || []).forEach(add);
+      out.push(s);
+    };
+    scripts.forEach(add);
+    return out;
+  };
+
   /* o: { folder, here, echoOff, comments, progress, pause, env } */
   B.compose = function (scripts, o) {
     const L = [];
+    const done = new Set();
+    const lastWriter = new Map();
     const C = !!o.comments;
     const blank = () => { if (L.length && L[L.length - 1] !== '') L.push(''); };
     if (o.echoOff) L.push('@echo off');
@@ -404,6 +548,15 @@
       if (o.progress && s.start) L.push('echo ' + U.echoText(s.start));
       (s.setup || []).forEach((x) => L.push(x));
       s.blocks.forEach((b) => {
+        // A block that comes back (the same sky, receiver or luminaire for a second
+        // workflow) runs once, unless another block rewrote one of its files since.
+        if (b.key) {
+          const files = b.writes || [];
+          const same = files.length ? files.every((f) => lastWriter.get(f) === b.key) : true;
+          if (done.has(b.key) && same) return;
+          done.add(b.key);
+          files.forEach((f) => lastWriter.set(f, b.key));
+        }
         if (C && b.rem) { blank(); L.push('REM ' + U.remText(b.rem)); }
         b.cmds.forEach((x) => L.push(x));
       });
@@ -411,7 +564,12 @@
     });
     if (o.pause) L.push('pause');
     const subs = [];
-    scripts.forEach((s) => { if (s.subs && s.subs.length) subs.push(s.subs); });
+    const labels = new Set();
+    scripts.forEach((s) => {
+      if (!s.subs || !s.subs.length || labels.has(s.subs[0])) return;
+      labels.add(s.subs[0]);
+      subs.push(s.subs);
+    });
     if (subs.length) {
       L.push('goto :eof');
       subs.forEach((sub) => { L.push(''); sub.forEach((x) => L.push(x)); });

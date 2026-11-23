@@ -5,14 +5,18 @@
   const el = U.el;
   const R = VR.ribbon = {};
 
-  const TABS = ['Params', 'Radiance', 'Workflows', 'Output'];
+  const TABS = ['Params', 'Radiance', 'Workflows', 'Post', 'Output'];
   const SHORT = {
     'Number Slider': 'Number slider', 'MD Slider': 'MD slider', 'Boolean Toggle': 'Toggle', 'Value List': 'Value list',
     'File Path': 'File path', 'Construct Point': 'Point', 'Radiance Parameters': 'Parameters', 'Spectral Settings': 'Spectral',
     'Image Settings': 'Image', 'Radiance Folders': 'Folders', 'Weather File': 'Weather', 'Sensor Grid': 'Sensor grid',
     'Sky Receiver': 'Receiver', 'Annual Illuminance': 'Annual', 'Point-in-Time Illuminance': 'Point in time',
     'Electric Illuminance': 'Electric', 'Point-in-Time Render': 'Render', 'Spectral Point-in-Time': 'Spectral PIT',
-    'Spectral Annual': 'Spectral annual', 'Batch Writer': 'Batch writer'
+    'Spectral Annual': 'Spectral annual', 'Batch Writer': 'Batch writer', 'Analysis Period': 'Period',
+    'Occupancy Schedule': 'Occupancy', 'Window Group': 'Window group', 'IES Luminaire': 'IES', 'Photon Map': 'Photon map',
+    'Illum Windows': 'mkillum', 'Cumulative Radiation': 'Radiation', 'Direct Sun Hours': 'Sun hours', 'Annual Glare': 'Annual glare',
+    'Annual Images': 'Annual images', 'Lighting Scenes': 'Scenes', 'LEED Illuminance': 'LEED opt2', 'Annual Metrics': 'Metrics',
+    'Grid Statistics': 'Statistics', 'Tone Map': 'Tone map'
   };
 
   /* == search used by the double-click popup == */

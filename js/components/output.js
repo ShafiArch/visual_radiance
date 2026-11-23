@@ -20,7 +20,8 @@
       { name: 'Comments', nick: 'REM', def: true, desc: 'Add REM comments describing each step.', hint: hint.toggle(true) },
       { name: 'Progress', nick: 'Echo', def: true, desc: 'Print start and end messages.', hint: hint.toggle(true) },
       { name: 'Pause', nick: 'Pause', def: false, desc: 'Keep the window open at the end (pause).', hint: hint.toggle(false) },
-      { name: 'Write', nick: 'Write', def: false, desc: 'Saves the file each time this turns True (connect a Button or Toggle).', hint: { widget: 'button' } }
+      { name: 'Write', nick: 'Write', def: false, desc: 'Saves the file each time this turns True (connect a Button or Toggle).', hint: { widget: 'button' } },
+      { name: 'Simulations first', nick: 'Deps', def: true, desc: 'Add the simulations that post-processing steps need before them (each once). Turn off to post-process results that already exist.', hint: hint.toggle(true) }
     ],
     outputs: [
       { name: 'Batch', nick: 'Bat', desc: 'Batch file text' },
@@ -33,9 +34,13 @@
     ],
     solve(ctx) {
       const items = ctx.list(0);
-      const scripts = items.filter((s) => s && s.kind === 'script');
+      let scripts = items.filter((s) => s && s.kind === 'script');
+      const direct = scripts.length;
+      if (ctx.bool(10) !== false) scripts = B.expand(scripts);
+      else scripts = scripts.filter((s, i) => scripts.indexOf(s) === i);
+      if (scripts.length > direct) ctx.remark('Added ' + (scripts.length - direct) + ' simulation script(s) that post-processing needs');
       if (!scripts.length) ctx.fail('Scripts needs workflow components (Annual, PIT, Render...)', 'warning');
-      if (scripts.length < items.length) ctx.warn((items.length - scripts.length) + ' item(s) in Scripts are not workflow scripts and were skipped');
+      if (direct < items.length) ctx.warn((items.length - direct) + ' item(s) in Scripts are not workflow scripts and were skipped');
       let name = ctx.str(1) || 'run_simulation.bat';
       if (/[\\/:*?"<>|]/.test(name)) {
         name = name.replace(/[\\/:*?"<>|]/g, '_');
