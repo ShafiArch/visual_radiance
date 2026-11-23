@@ -1,0 +1,2 @@
+oconv aluminum_frames_spectrum.rad concrete_spectrum.rad ground_spectrum.rad glazing1.rad envelope.rad spectralsky.rad > specmodel.oct
+rtrace -I -h -cs 21 -cw 380 780 -aa 0.2 -ab 3 -ad 2048 -ar 64 -as 2048 -dc 0.5 -dj 0.5 -dp 256 -dr 1 -ds 0.25 -dt 0.25 -lr 6 -lw 0.01 -ss 0.7 -st 0.5 -af model.amb -e error.log -co+ specmodel.oct < 0.pts > specgreenhouse.res
