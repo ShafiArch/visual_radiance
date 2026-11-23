@@ -61,27 +61,6 @@ Components turn orange when an input is missing or a setting looks wrong, and re
 - Chrome may ask you to confirm before keeping a downloaded `.bat` file, because it is a program file.
 - The batch files call Radiance programs by name. If Radiance is not on your PATH, connect a **Radiance Folders** component to the Batch Writer.
 
-## Examples and the reference files
-
-The folder `reference/` holds six batch files from an existing Radiance pipeline. Each example in **File > Examples** rebuilds one of them:
-
-| Example | Rebuilds |
-| - | - |
-| Annual illuminance (part 0) | `Annual_Illuminance_run_part0.bat` |
-| Electric illuminance | `Electric_Illuminance_run_simulation.bat` |
-| Point-in-time illuminance | `Point_In_Time_Illuminance_run_simulation.bat` |
-| Point-in-time render (hour 4118) | `Point_In_Time_Render_run_rpict_4118.bat` |
-| Spectral point-in-time | `Spectral_Point_In_Time_run_pt.bat` |
-| Spectral annual (hour loop), lower part | `Spectral_Annual_Illuminance_K_runPITspec.bat` |
-
-To check them, run `node tests/check-reference.js` (Node 18 or newer). The test compares every line; options are compared as sets because their order does not matter to Radiance.
-
-Two differences from the reference files are intended:
-
-1. **Sun count.** The reference annual file creates 5221 suns (145 x 6 x 6 + 1). A Reinhart sky with MF 6 has 144 x 6 x 6 + 1 = 5185 patches, and the 36 extra suns all land on the zenith patch, which would count the zenith sun 37 times. It makes no difference in Seattle, where the sun never gets that high, but it would matter near the tropics. Visual Radiance writes 5185.
-2. **A warning, not a change.** The annual example keeps `-lw 0.001` with `-ad 2048`, as in the reference, and the Annual component shows a warning because `-lw` is above 1/`-ad`, which can make rfluxmtx results noisy.
-
-Newer Radiance releases may ship `rskysrc.cal` instead of `reinsrc.cal` for the sun positions. Right-click the Annual component and pick the file under **Sun source file**.
 
 ## Deploying on GitHub Pages
 
